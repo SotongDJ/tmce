@@ -56,7 +56,7 @@ The first column is always a **12-character base62-Gu UUID** — a time-based, c
 ### 3.1 Structure
 
 ```
-{class}{G}{century}{year2d}{month}{day}{hour}{minute}{second}{order2}
+<class><G><century><year2d><month><day><hour><minute><second><order2>
   1      1    1       2      1     1    1      1       1        2     = 12 chars
 ```
 
@@ -78,7 +78,7 @@ The first column is always a **12-character base62-Gu UUID** — a time-based, c
 | Property      | Specification                                       |
 |---------------|-----------------------------------------------------|
 | Width         | Exactly 12 bytes (fixed)                            |
-| Character set | `[A-Z]G[0-9a-km-zA-NP-Z]{8}[0-9a-zA-Z]{2}`        |
+| Character set | `[A-Z]G[0-9a-km-zA-NP-Z]×8[0-9a-zA-Z]×2`          |
 | Byte position | `line[0..12]`                                       |
 | Followed by   | `\t` at byte 12                                     |
 
@@ -191,14 +191,13 @@ A write-ahead buffer of uncommitted operations, appended after the blank line se
 ## 9. Parsing — Zero-Copy Fast Path
 
 ```rust
-fn parse_record(line: &str) -> (&str, Vec<(&str, &str)>) {
+fn parse_record(line: &str) -> (&str, Vec<(&str, &str)>)
     let uuid = &line[..12];
     let kvs = line[13..]
         .split('\t')
         .filter_map(|pair| pair.split_once('='))
         .collect();
     (uuid, kvs)
-}
 ```
 
 - `split` and `split_once` are `memchr`-accelerated in Rust's standard library.

@@ -1,0 +1,14 @@
+[workspace]
+authors = ["SOH ZHI THONG <dj@trth.nl>"]
+channels = ["conda-forge"]
+name = "tmce"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = ">=3.14.4,<3.15"
+
+[pypi-dependencies]
+maltha = ">=0.4.0, <0.5"

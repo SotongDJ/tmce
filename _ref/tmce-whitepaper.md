@@ -259,7 +259,7 @@ git commit -m "refresh notes consolidation"
 
 ```bash
 # List every member tagged "policy"
-awk -F'\t' '$1 == "policy" { print $2 }' notes.tf.rtv | tr ',' '\n'
+awk -F'\t' '$1 == "policy" (print $2)' notes.tf.rtv | tr ',' '\n'
 ```
 
 ---

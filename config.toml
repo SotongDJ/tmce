@@ -12,6 +12,7 @@
 "opengraph_image" = ""
 "opengraph_image_alt" = ""
 "category_preview" = "Posts tagged: {}"
+"exclude_dirs" = ["reports"]
 "paginate_number" = 10
 "paginate_format" = "/p{num}/"
 "separator_preview" = "<!--excerpt-->"

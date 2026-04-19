@@ -49,7 +49,7 @@ The first column is always a **12-character base62-Gu UUID** — a time-based, c
 ### 3.1 Structure
 
 ```
-{class}{G}{century}{year2d}{month}{day}{hour}{minute}{second}{order2}
+<class><G><century><year2d><month><day><hour><minute><second><order2>
   1      1    1       2      1     1    1      1       1        2     = 12 chars
 ```
 
@@ -71,7 +71,7 @@ The first column is always a **12-character base62-Gu UUID** — a time-based, c
 | Property       | Specification                                      |
 |----------------|----------------------------------------------------|
 | Width          | Exactly 12 bytes (fixed)                           |
-| Character set  | `[A-Z]G[0-9a-km-zA-NP-Z]{8}[0-9a-zA-Z]{2}`       |
+| Character set  | `[A-Z]G[0-9a-km-zA-NP-Z]×8[0-9a-zA-Z]×2`         |
 | Byte position  | `line[0..12]`                                      |
 | Followed by    | `\t` at byte 12                                    |
 
@@ -215,14 +215,13 @@ The padding strategy works because the KV parser trims trailing whitespace from 
 The core parse loop in Rust:
 
 ```rust
-fn parse_record(line: &str) -> (&str, Vec<(&str, &str)>) {
+fn parse_record(line: &str) -> (&str, Vec<(&str, &str)>)
     let uuid = &line[..12];
     let kvs = line[13..]          // skip uuid + \t
         .split('\t')
         .filter_map(|pair| pair.split_once('='))
         .collect();
     (uuid, kvs)
-}
 ```
 
 - `split` and `split_once` are `memchr`-accelerated in Rust's standard library.
@@ -232,32 +231,29 @@ fn parse_record(line: &str) -> (&str, Vec<(&str, &str)>) {
 ### Binary Search on mmap
 
 ```rust
-fn find_record<'a>(mmap: &'a [u8], target: &str) -> Option<&'a str> {
+fn find_record<'a>(mmap: &'a [u8], target: &str) -> Option<&'a str>
     let text = std::str::from_utf8(mmap).ok()?;
     let mut lo = 0usize;
     let mut hi = text.len();
 
-    while lo < hi {
+    while lo < hi
         let mid = (lo + hi) / 2;
-        let line_start = match text[..mid].rfind('\n') {
+        let line_start = match text[..mid].rfind('\n')
             Some(p) => p + 1,
             None => 0,
-        };
+        ;
         let uuid = &text[line_start..line_start + 12];
 
-        if uuid < target {
+        if uuid < target
             lo = text[mid..].find('\n').map(|p| mid + p + 1).unwrap_or(hi);
-        } else if uuid > target {
+        else if uuid > target
             hi = line_start;
-        } else {
+        else
             let line_end = text[line_start..].find('\n')
                 .map(|p| line_start + p)
                 .unwrap_or(text.len());
             return Some(&text[line_start..line_end]);
-        }
-    }
     None
-}
 ```
 
 ---
