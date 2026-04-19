@@ -1,0 +1,10 @@
+[package]
+name = "tmce"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tmce"
+path = "src/main.rs"
+
+[dependencies]

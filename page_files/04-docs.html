@@ -1,0 +1,152 @@
+<!--break type:header content-->
+title = "Quick"
+path = ["/docs/"]
+page_emoji = ""
+type = "content"
+format = "md"
+<!--break type:content format:md content-->
+# tmce Technical Reference
+
+`tmce` is the command-line engine for TMC (Tab-separate Markdown Consolidation) flat-file containers — one UTF-8 text file that stores many Markdown documents, losslessly decomposed.
+
+```
+tmce input   <target.tmc> <source.md> <tags> [<base62-Gu-id>]
+tmce list    <target.tmc>
+tmce remove  <target.tmc> <uuid>
+tmce view    <target.tmc> <uuid>
+tmce compact <target.tmc>
+tmce relate  <target.tmc>
+```
+
+---
+
+## TMC File Format
+
+A TMC file holds two row shapes on one stream, dispatched by column 3.
+
+### Header row — 6 columns
+
+```
+a\t<member_order>\theader\t<uuid>\t<tags>\t<title>\n
+```
+
+One per member. `file_order` is always `a`; `member_order` picks out the member this header describes.
+
+### Content row — 5 columns
+
+```
+<file_order>\t<section_order>\t<section_type>\t<indent>\t<content>\n
+```
+
+One per Markdown section. `file_order` matches some header row's `member_order`.
+
+### Example
+
+```
+a	b	header	note.md	ai,news	AI article title
+a	c	header	NGk26dhizN01	ai,policy	Another article
+b	a	h1	0	AI article title
+b	b	content	0	A paragraph of body text.
+b	c	ul	0	first bullet
+c	a	h1	0	Another article
+c	b	content	0	Another body paragraph.
+```
+
+### `section_type` catalogue
+
+| Value       | Markdown construct                                |
+|-------------|---------------------------------------------------|
+| `h1`..`h6`  | ATX heading                                       |
+| `content`   | Paragraph / plain text line                       |
+| `quote`     | Block quote (`>` stripped)                        |
+| `ul`        | Unordered list item (`-`, `*`, `+` stripped)      |
+| `li`        | Ordered list item (numbering regenerated on view) |
+| `codefence` | Fenced code block; interior `\n` preserved via escape |
+| `hr`        | Horizontal rule (empty content)                   |
+| `header`    | Reserved — identifies a 6-column header row       |
+
+Unknown values are preserved verbatim so round-tripping never drops data.
+
+### Base-52 order alphabet
+
+Orders use `[a-z][A-Z]` big-endian digits. Value 0 (`a`, `aa`, …) is reserved for the header pseudo-file; members start at value 1 (`b`, `ab`, …). All orders in one column share the same width; `tmce compact` widens cleanly when needed.
+
+### Escaping
+
+Only four bytes require escaping — letter-based, not hex:
+
+| Byte | Escaped |
+|------|---------|
+| `\t` | `\t`    |
+| `\n` | `\n`    |
+| `\r` | `\r`    |
+| `\`  | `\\`    |
+
+Spaces, CJK, emoji, `=`, `,` all pass through untouched. An unknown `\?` sequence during unescape is a parse error.
+
+---
+
+## Subcommands
+
+| Subcommand | Purpose                                                                                   |
+|------------|-------------------------------------------------------------------------------------------|
+| `input`    | Decompose a Markdown source and append it as a new member of the container                |
+| `list`     | Print the uuid column of every header row                                                 |
+| `remove`   | Drop a member's header row and every matching content row                                 |
+| `view`     | Reassemble a member back to Markdown on stdout                                            |
+| `compact`  | Validate, sort members by uuid, reassign `file_order`, widen width when needed, re-validate |
+| `relate`   | Regenerate the sibling `.ft.rtv` (uuid → tags) and `.tf.rtv` (tag → uuids) indexes        |
+
+### `tmce input` argument order
+
+```
+tmce input <target.tmc> <source.md> <tags> [<base62-Gu-id>]
+```
+
+- `<tags>` — comma-separated; internal whitespace per tag is collapsed to `_` at write time.
+- `<base62-Gu-id>` — optional 12-char identifier; if absent, the `uuid` column takes the source file's basename.
+
+### Validation
+
+`input`, `remove`, and `compact` validate the full container before writing. Checks include unique member_order, unique `(file_order, section_order)` pairs, `indent` in `0..=20`, base-52 order digits only, and consistent order width within each column.
+
+---
+
+## Companion Index Files
+
+`tmce relate` writes two sibling artefacts next to the container:
+
+```
+<target>.ft.rtv   — <uuid>\t<tag1,tag2,...>     (sorted by uuid)
+<target>.tf.rtv   — <tag>\t<uuid1,uuid2,...>    (sorted by tag)
+```
+
+Both are plain TSV using the same escape rules as the `.tmc` itself. Writes are atomic (temp file + `rename`), so concurrent readers always see a complete version.
+
+---
+
+## Round-trip Guarantees
+
+`tmce view` reconstructs Markdown from a container with these properties:
+
+- Heading levels, paragraphs, block quotes, list items, code fences, and horizontal rules all reappear.
+- Section ordering is preserved.
+- Fenced-code content is preserved byte-for-byte (via `\n` escape).
+- Ordered-list numbering is regenerated (`1.`, `2.`, `3.`) — the original digit is not stored.
+- Trailing whitespace on paragraph lines may be trimmed.
+
+Output is semantically equivalent when rendered, not byte-identical.
+
+---
+
+## Building
+
+Requires Rust 1.94+.
+
+```bash
+source "$HOME/.cargo/env"
+cargo build --release
+# binary: target/release/tmce
+```
+
+No runtime dependencies beyond the Rust standard library.

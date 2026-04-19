@@ -1,0 +1,295 @@
+# tmce — The Tab-separate Markdown Consolidation Engine
+
+**Version:** 0.1 Draft
+**Binary:** `tmce`
+**Usage:** `tmce <subcommand> <target.tmc> [<args>]`
+
+**Revision history:**
+- 0.1 — initial release; `input` / `list` / `remove` / `view` / `compact` / `relate` subcommands
+
+---
+
+## 1. Overview
+
+`tmce` is a command-line engine for TMC (`.tmc`) files — a tab-separated flat-file container that consolidates many Markdown documents into one UTF-8 text artefact. See the companion **TMC whitepaper** for the on-disk record grammar; this document covers the CLI and its execution semantics.
+
+Design principles:
+
+- **Markdown stays authoritative** — the container is a lossless decomposition; `tmce view` reconstructs the original author-facing document.
+- **One file, one tool** — a `.tmc` is editable with any text editor, but `tmce` is the reference implementation for correctness (validation, ordering, compaction, index generation).
+- **Two row shapes, one parser** — column 3 (`section_type`) selects the shape (6-col header vs. 5-col content). No tokenizer, no state machine.
+- **Deterministic output** — save/compact always produce the same bytes for the same logical content, so `.tmc` diffs are readable in git.
+
+---
+
+## 2. Invocation
+
+```
+tmce input   <target.tmc> <source.md> <tags> [<base62-Gu-id>]
+tmce list    <target.tmc>
+tmce remove  <target.tmc> <uuid>
+tmce view    <target.tmc> <uuid>
+tmce compact <target.tmc>
+tmce relate  <target.tmc>
+```
+
+| Form                                                       | Description                                                         |
+|------------------------------------------------------------|---------------------------------------------------------------------|
+| `tmce input <target.tmc> <source.md> <tags> [<id>]`        | Decompose `source.md` and append it as a new member of the container |
+| `tmce list <target.tmc>`                                   | Print the uuid column of every header row                           |
+| `tmce remove <target.tmc> <uuid>`                          | Drop the named member's header row and every content row that belongs to it |
+| `tmce view <target.tmc> <uuid>`                            | Reassemble the named member back to Markdown on stdout              |
+| `tmce compact <target.tmc>`                                | Validate, sort members by uuid, reassign `file_order`, re-validate  |
+| `tmce relate <target.tmc>`                                 | Regenerate the sibling `.ft.rtv` and `.tf.rtv` inverted indexes     |
+
+If `<target.tmc>` does not exist, `tmce input` creates it; all other subcommands require an existing container.
+
+---
+
+## 3. `tmce input`
+
+```
+tmce input <target.tmc> <source.md> <tags> [<base62-Gu-id>]
+```
+
+Decomposes `source.md` into TMC content rows and appends a new header row. Steps:
+
+1. Load `<target.tmc>` if it exists, else start with an empty container.
+2. Resolve the **uuid column**:
+   - If `<base62-Gu-id>` is supplied, validate it as a 12-char base62-Gu identifier and use it verbatim.
+   - Otherwise, use the basename of `<source.md>` (directory stripped).
+3. Reject if the resolved uuid already matches an existing header row in the container.
+4. **Normalise tags** — split `<tags>` on `,`; collapse internal whitespace in each tag to `_`; re-join with `,`.
+5. **Derive title** — first ATX `# ` heading in `source.md`, or fall back to the uuid.
+6. **Allocate `member_order`** — next unused slot at the container's existing width. If the next value overflows the existing width, `tmce input` refuses and asks the caller to run `tmce compact` (which widens cleanly).
+7. **Decompose** the Markdown into content drafts (see §3.1) and append one content row per draft.
+8. **Validate** the whole container (see §8), then atomically write back to `<target.tmc>`.
+
+### 3.1 Markdown decomposition
+
+The decomposer walks `source.md` line by line and produces a flat sequence of `(section_type, indent, content)` triples:
+
+| Input                                 | `section_type`        |
+|---------------------------------------|-----------------------|
+| `# heading` … `###### heading`        | `h1` … `h6`           |
+| ``` ``` ``` fenced block``` ``` ``` | `codefence` (interior `\n` preserved via §6 escape) |
+| `> quoted line`                       | `quote`               |
+| `- item`, `* item`, `+ item`          | `ul`                  |
+| `1. item`, `42) item`                 | `li` (ordered-list item; original digit not preserved) |
+| `---`, `***`, `___` (3+ of a kind)    | `hr` (empty content)  |
+| anything else non-blank               | `content`             |
+
+Blank lines are consumed as section separators and not emitted as rows.
+
+### 3.2 Markdown recomposition
+
+`tmce view` inverts decomposition with one deliberate loss: **ordered-list numbering is regenerated** (`1.`, `2.`, `3.`), because the original digit is not stored. All other constructs round-trip structurally intact.
+
+---
+
+## 4. `tmce list`
+
+```
+tmce list <target.tmc>
+```
+
+Walks the header rows in file order and prints the `uuid` column, one per line. No opcode prefix, no surrounding text. Suitable as input to `xargs`, `awk`, or subsequent `tmce view` / `tmce remove` calls.
+
+---
+
+## 5. `tmce remove`
+
+```
+tmce remove <target.tmc> <uuid>
+```
+
+1. Find the header row whose `uuid` matches the argument. Error if no match.
+2. Remember the matched `member_order`.
+3. Retain every row whose uuid ≠ target **and** whose `file_order` ≠ the matched `member_order`.
+4. Atomically write the container back.
+
+`remove` does not compact. The now-unused `member_order` slot stays empty until the next `tmce compact` renumbers members. Gaps between member slots are legal and never create collisions because `tmce input` always picks the **highest used + 1**, not the lowest free.
+
+---
+
+## 6. `tmce view`
+
+```
+tmce view <target.tmc> <uuid>
+```
+
+1. Find the header row for `uuid`; error if missing.
+2. Collect every content row whose `file_order` matches the member's `member_order`.
+3. Sort by `section_order` (base-52 lexicographic order equals numeric order — see the TMC whitepaper §5.3).
+4. Feed the ordered drafts through the recomposer (§3.2) and print to stdout.
+
+Output is UTF-8 Markdown suitable for piping to a renderer, writing back to disk, or diffing against the original source.
+
+---
+
+## 7. `tmce compact`
+
+```
+tmce compact <target.tmc>
+```
+
+Renumbers members into a contiguous `b`, `c`, … sequence sorted by uuid, and widens the order alphabet when necessary.
+
+1. **Load** `<target.tmc>`.
+2. **Validate** (§8); any error aborts before writing.
+3. Collect `(uuid, old_member_order)` pairs and sort by uuid.
+4. Compute the minimum order width needed for `1 + member_count` positions (so the header slot `a`/`aa`/… fits alongside every member).
+5. Assign each uuid a new `member_order` at that width: first uuid → value 1 (`b` at width 1, `ab` at width 2, …), next → value 2, and so on.
+6. Rewrite every header and content row with the remapped orders; header rows get `file_order = a` at the chosen width. Sort rows so all headers come first (by `member_order`) and content follows in `(file_order, section_order)` order.
+7. **Re-validate** the rewritten container.
+8. Atomic write back.
+
+Widening the alphabet from one digit to two is a legal compact outcome; going from `b` … `Z` (values 1–51) to `ab` … `BZ` requires rewriting every existing `file_order`, which compaction does as a single pass.
+
+---
+
+## 8. Validation
+
+`tmce` validates a loaded container before trusting it and after rewriting it. The checks:
+
+| Check                                                                                       | Raised as                      |
+|---------------------------------------------------------------------------------------------|--------------------------------|
+| Every header row has `file_order = a` (at the container's width)                            | parse or validate error        |
+| Every header row has `section_type = header`                                                 | parse error                    |
+| `member_order` uuids are unique                                                              | validate error                 |
+| Every content row's `file_order` matches some header row's `member_order`                   | `MissingMember`                |
+| `(file_order, section_order)` pairs are unique across content rows                           | validate error                 |
+| `indent` is in `0..=20`                                                                      | `InvalidIndent`                |
+| Base-52 orders use only `[a-z][A-Z]`                                                         | `InvalidOrder`                 |
+| All orders within a single column share the same width (full-digit discipline)              | validate error                 |
+| Base62-Gu uuids (12-char form) pass the class/format character check                         | `InvalidUuid` (on `input` only; stored uuids are trusted on load) |
+
+`tmce input`, `tmce remove`, and `tmce compact` all run validate before writing. `tmce view`, `tmce list`, and `tmce relate` run validate implicitly via `Container::load`.
+
+---
+
+## 9. Escaping
+
+TMC uses **letter-based** escapes (not the hex-based DOTSV form). `tmce` reads and writes every column through the same escape layer:
+
+| Byte   | Escaped form |
+|--------|--------------|
+| `\t`   | `\t`         |
+| `\n`   | `\n`         |
+| `\r`   | `\r`         |
+| `\`    | `\\`         |
+
+An unknown `\?` sequence during unescape is a parse error. No other bytes are escaped — spaces, CJK, emoji, `=`, `,` pass through untouched. The only caveat: a literal `,` inside a tag collides with the array separator used by the `.ft.rtv` / `.tf.rtv` indexes; avoid it.
+
+---
+
+## 10. `tmce relate`
+
+```
+tmce relate <target.tmc>
+```
+
+Generates two sibling inverted-index files from the container's header rows. Both are plain TSV using the §9 escape rules.
+
+### 10.1 `<stem>.ft.rtv` — file → tags
+
+One row per member, sorted by uuid:
+
+```
+<uuid>\t<tag1,tag2,…>\n
+```
+
+The tag list is the raw canonical tag string from the header row's `tags` column, emitted as a comma-separated array.
+
+### 10.2 `<stem>.tf.rtv` — tag → files
+
+One row per distinct tag, sorted by tag:
+
+```
+<tag>\t<uuid1,uuid2,…>\n
+```
+
+Uuids within each row are listed in insertion order (the order the tag was encountered across header rows).
+
+### 10.3 Regeneration
+
+`tmce relate` always writes both files from scratch — it never tries to merge or patch existing output. Callers who have hand-edited a `.rtv` file will lose those edits; the files are generated artefacts, not source.
+
+Writes are atomic (temp file + `rename`), so concurrent readers always see either the previous complete version or the new complete version.
+
+---
+
+## 11. Workflow Examples
+
+### 11.1 First ingest
+
+```bash
+tmce input notes.tmc article-1.md "ai,news"
+tmce input notes.tmc article-2.md "ai,policy" NGk26dhizN01
+tmce list notes.tmc
+# article-1.md
+# NGk26dhizN01
+```
+
+### 11.2 Round-trip one member
+
+```bash
+tmce view notes.tmc article-1.md > restored.md
+diff article-1.md restored.md
+# structurally equivalent (may differ in trailing whitespace / OL digits)
+```
+
+### 11.3 Retag / replace a member
+
+```bash
+tmce remove notes.tmc article-2.md
+tmce input  notes.tmc article-2.md "ai,policy,draft"
+```
+
+### 11.4 Periodic housekeeping
+
+```bash
+tmce compact notes.tmc   # renumber members by uuid; widen width if needed
+tmce relate  notes.tmc   # refresh ft.rtv / tf.rtv
+git add notes.tmc notes.ft.rtv notes.tf.rtv
+git commit -m "refresh notes consolidation"
+```
+
+### 11.5 Tag-driven retrieval
+
+```bash
+# List every member tagged "policy"
+awk -F'\t' '$1 == "policy" { print $2 }' notes.tf.rtv | tr ',' '\n'
+```
+
+---
+
+## 12. Design Rationale
+
+| Goal                         | Mechanism                                                             |
+|------------------------------|-----------------------------------------------------------------------|
+| Plain-text, grep-friendly    | UTF-8, tab-separated, line-oriented — TMC spec §1                     |
+| Lossless Markdown round-trip | `section_type` covers every block-level construct; `Other(tag)` preserves unknowns |
+| Minimal parser               | One byte check on column 3 selects shape; `splitn` for the rest       |
+| Deterministic git diffs      | Stable row ordering, canonical tag normalisation, atomic writes       |
+| Safe concurrent reads        | Temp + rename on every write; readers never see half-written state    |
+| Identifier flexibility       | uuid column accepts either base62-Gu or plain filename                |
+| Indexable without re-parsing | Companion `.ft.rtv` / `.tf.rtv` generated by `tmce relate`            |
+
+---
+
+## 13. Dependencies
+
+`tmce` 0.1 has **no runtime dependencies** beyond the Rust standard library. Base-52 arithmetic, escape handling, markdown decomposition, and atomic writes are all in-crate.
+
+---
+
+## 14. Related Formats
+
+| Format | Extension    | Full name                                | Role                                          | Created by     |
+|--------|--------------|------------------------------------------|-----------------------------------------------|----------------|
+| `tmc`  | `*.tmc`      | Tab-separate Markdown Consolidation      | Consolidation container                       | `tmce input`   |
+| `rtv`  | `*.ft.rtv`   | File-to-tag relation                     | uuid → tags inverted index                    | `tmce relate`  |
+| `rtv`  | `*.tf.rtv`   | Tag-to-file relation                     | tag → uuids inverted index                    | `tmce relate`  |
+
+The `.rtv` extension is shared with `tsdb`'s relation format; the `ft` / `tf` infix identifies the TMC-specific variants. The on-disk grammar of `.tmc` itself is fully specified in the TMC whitepaper.
