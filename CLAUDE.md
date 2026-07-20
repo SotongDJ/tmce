@@ -84,3 +84,13 @@ Whitepaper pages are live mirrors of the `_ref/` sources. Always read the curren
 - `_ref/DOTSV-whitepaper.md` → `page_files/05-dotsv-whitepaper.html`
 - `_ref/tmce-whitepaper.md` → `page_files/06-tmce-whitepaper.html`
 - `_ref/TMC-whitepaper.md`  → `page_files/07-tmc-whitepaper.html`
+
+## Build discipline
+
+- Build with `./build.sh`. On the maintainer's host it routes through a
+  machine-wide build guard that serialises Rust/Android builds (one at a time)
+  and registers build intermediates for a 24-hour cache expiry; compiled
+  executables are never removed by that cleanup. On any other machine the
+  script is equivalent to `cargo build --release`.
+- Prefer `./build.sh` over invoking cargo directly so the serialisation holds
+  wherever the guard is present.
