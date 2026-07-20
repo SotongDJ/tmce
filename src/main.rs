@@ -88,11 +88,14 @@ fn cmd_input(target: &Path, source: &Path, tags: &str, id: Option<&str>) -> Resu
     let tags = normalise_tags(tags);
     let title = derive_title(&md).unwrap_or_else(|| uuid.clone());
 
-    let new_member_order = next_member_order(&container)?;
+    let new_member_order = next_member_order(&mut container)?;
 
-    // Header row for the new member.
+    // Header row for the new member. Use the same width as the member_order
+    // so that the file_order pseudo-value ("a…a") is width-consistent with
+    // any auto-widening that may have just occurred.
+    let header_file_order = Order::header(new_member_order.width());
     container.rows.push(Row::Header {
-        file_order: Order::parse("a").unwrap(),
+        file_order: header_file_order,
         member_order: new_member_order.clone(),
         uuid: uuid.clone(),
         tags,
@@ -263,7 +266,7 @@ fn cmd_compact(target: &Path) -> Result<()> {
                     .cloned()
                     .ok_or_else(|| TmceError::Other("inconsistent header remap".into()))?;
                 new_rows.push(Row::Header {
-                    file_order: Order::header(1),
+                    file_order: Order::header(width),
                     member_order: new_member,
                     uuid: uuid.clone(),
                     tags: tags.clone(),
@@ -430,7 +433,7 @@ fn derive_title(md: &str) -> Option<String> {
     None
 }
 
-fn next_member_order(container: &Container) -> Result<Order> {
+fn next_member_order(container: &mut Container) -> Result<Order> {
     // Value 0 is reserved for the header pseudo-file. Pick the next integer
     // greater than any existing member_order.
     let max_used: u64 = container
@@ -444,8 +447,7 @@ fn next_member_order(container: &Container) -> Result<Order> {
         .unwrap_or(0);
     let next = max_used + 1;
 
-    // Choose the smallest width that fits `next` and keep all existing
-    // file_orders at that same width. Existing widths:
+    // Collect existing widths to detect mixed-width or overflow conditions.
     let existing_widths: std::collections::HashSet<usize> = container
         .rows
         .iter()
@@ -455,24 +457,82 @@ fn next_member_order(container: &Container) -> Result<Order> {
         })
         .collect();
 
-    let width = if existing_widths.is_empty() {
-        1
-    } else if existing_widths.len() == 1 {
-        let w = *existing_widths.iter().next().unwrap();
-        if Order::from_value(next, w).is_some() {
-            w
-        } else {
-            return Err(TmceError::Other(format!(
-                "member slot {} exceeds current width {}; run `tmce compact` to widen",
-                next, w
-            )));
-        }
-    } else {
+    if existing_widths.len() > 1 {
         return Err(TmceError::Other(
             "container has mixed order widths; run `tmce compact`".into(),
         ));
-    };
+    }
 
-    Order::from_value(next, width)
+    let current_width = existing_widths.into_iter().next().unwrap_or(1);
+
+    // If `next` fits within the current width, use it as-is.
+    if Order::from_value(next, current_width).is_some() {
+        return Order::from_value(next, current_width)
+            .ok_or_else(|| TmceError::Other(format!("cannot allocate order for value {}", next)));
+    }
+
+    // `next` does not fit: auto-widen the container. Compute the minimum
+    // width that accommodates `next` member slots (value 0 = header, so we
+    // need capacity for values 0..=next).
+    let new_width = Order::min_width_for(next + 1);
+    eprintln!(
+        "Auto-widening file_order from width {} to {} (member slot {} exceeds capacity)",
+        current_width, new_width, next
+    );
+
+    // Build old_render -> new_order mapping for every existing member_order
+    // (content file_orders share the same values).
+    // We keep the same numeric values, just re-encoded at the new width.
+    let value_map: std::collections::HashMap<String, Order> = container
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Header { member_order, .. } => {
+                let old_render = member_order.render();
+                let val = member_order.value();
+                let new_order = Order::from_value(val, new_width)?;
+                Some((old_render, new_order))
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Rewrite all rows in-place with the widened orders.
+    for row in &mut container.rows {
+        match row {
+            Row::Header {
+                file_order,
+                member_order,
+                ..
+            } => {
+                // file_order for header rows is the all-zero pseudo-order.
+                *file_order = Order::header(new_width);
+                let new_mo = value_map
+                    .get(&member_order.render())
+                    .cloned()
+                    .ok_or_else(|| {
+                        TmceError::Other(format!(
+                            "widen: unknown member_order {:?}",
+                            member_order.render()
+                        ))
+                    })?;
+                *member_order = new_mo;
+            }
+            Row::Content { file_order, .. } => {
+                let new_fo = value_map
+                    .get(&file_order.render())
+                    .cloned()
+                    .ok_or_else(|| {
+                        TmceError::Other(format!(
+                            "widen: unknown file_order {:?}",
+                            file_order.render()
+                        ))
+                    })?;
+                *file_order = new_fo;
+            }
+        }
+    }
+
+    Order::from_value(next, new_width)
         .ok_or_else(|| TmceError::Other(format!("cannot allocate order for value {}", next)))
 }
