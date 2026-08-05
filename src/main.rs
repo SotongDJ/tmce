@@ -36,6 +36,10 @@ fn usage() -> ExitCode {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.as_slice() {
+        [flag] if flag == "--version" || flag == "-V" => {
+            println!("tmce {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
         [cmd, target, source, tags] if cmd == "input" => {
             cmd_input(Path::new(target), Path::new(source), tags, None)
         }
